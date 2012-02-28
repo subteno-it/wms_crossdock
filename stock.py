@@ -73,7 +73,9 @@ class stock_picking(osv.osv):
             in_move_ids = stock_move_obj.search(cr, uid, [('picking_id', 'in', in_ids), ('state', 'not in', ('done', 'cancel'))], context=context)
             for in_move in stock_move_obj.browse(cr, uid, in_move_ids, context=context):
                 # Verify the product is allowed for crossdock management
-                if in_move.product_id and in_move.product_id.location_type == 'crossdock':
+                if in_move.product_id and in_move.product_id.location_type == 'crossdock' \
+                   and in_move.location_dest_id.warehouse_id \
+                   and in_move.location_dest_id.warehouse_id.crossdock_location_id:
                     if not in_move.location_dest_id.warehouse_id:
                         raise osv.except_osv(_('Configuration error'), _('Warehouse missing on location %s' % in_move.location_dest_id.name))
                     # Verifiy if the move is already for a stock picking out
@@ -89,12 +91,28 @@ class stock_picking(osv.osv):
                                 crossdock_quantity = in_move.move_dest_id.product_qty - out_move_quantity
                                 data = {
                                     'product_qty': crossdock_quantity,
+                                    'product_uos_qty': stock_move_obj.onchange_quantity(
+                                        cr, uid, [],
+                                        in_move.product_id.id,
+                                        crossdock_quantity,
+                                        in_move.product_id.uom_id.id,
+                                        in_move.product_id.uos_id and in_move.product_id.uos_id.id or False
+                                    )['value']['product_uos_qty'],
                                     'location_id': crossdock_location_id,
                                     'move_dest_id': False,
                                     'state': 'assigned',
                                 }
                                 new_move_id = stock_move_obj.copy(cr, uid, in_move.move_dest_id.id, data, context=context)
-                                stock_move_obj.write(cr, uid, [in_move.move_dest_id.id], {'product_qty': out_move_quantity}, context=context)
+                                stock_move_obj.write(cr, uid, [in_move.move_dest_id.id], {
+                                    'product_qty': out_move_quantity,
+                                    'product_uos_qty': stock_move_obj.onchange_quantity(
+                                        cr, uid, [],
+                                        in_move.move_dest_id.product_id.id,
+                                        out_move_quantity,
+                                        in_move.move_dest_id.product_id.uom_id.id,
+                                        in_move.move_dest_id.product_id.uos_id and in_move.move_dest_id.product_id.uos_id.id or False
+                                    )['value']['product_uos_qty'],
+                                }, context=context)
                                 stock_move_obj.write(cr, uid, [in_move.id], {'location_dest_id': crossdock_location_id, 'move_dest_id': new_move_id}, context=context)
                             # in_move.product_qty > in_move.move_dest_id.product_qty:
                             else:
@@ -102,35 +120,81 @@ class stock_picking(osv.osv):
                                 crossdock_quantity = in_move.product_qty - out_move_quantity
                                 data = {
                                     'product_qty': out_move_quantity,
+                                    'product_uos_qty' : stock_move_obj.onchange_quantity(
+                                        cr, uid, [],
+                                        in_move.product_id.id,
+                                        out_move_quantity,
+                                        in_move.product_id.uom_id.id,
+                                        in_move.product_id.uos_id and in_move.product_id.uos_id.id or False
+                                    )['value']['product_uos_qty'],
                                     'move_dest_id': False,
                                     'state': 'assigned',
                                 }
                                 new_move_id = stock_move_obj.copy(cr, uid, in_move.id, data, context=context)
                                 stock_move_obj.write(cr, uid, [in_move.move_dest_id.id], {'location_id': crossdock_location_id}, context=context)
-                                stock_move_obj.write(cr, uid, [in_move.id], {'product_qty': crossdock_quantity, 'location_dest_id': crossdock_location_id}, context=context)
+                                stock_move_obj.write(cr, uid, [in_move.id], {
+                                    'product_qty': crossdock_quantity,
+                                    'product_uos_qty': stock_move_obj.onchange_quantity(
+                                        cr, uid, [],
+                                        in_move.product_id.id,
+                                        crossdock_quantity,
+                                        in_move.product_id.uom_id.id,
+                                        in_move.product_id.uos_id and in_move.product_id.uos_id.id or False
+                                    )['value']['product_uos_qty'],
+                                    'location_dest_id': crossdock_location_id
+                                }, context=context)
                     else:
                         # search if this picking is in backorder_id in other picking in
                         in_picking_backorder_ids = self.search(cr, uid, [('backorder_id', '=', in_move.picking_id.id), ('type', '=', 'in')], context=context)
+                        ok = True
                         if in_picking_backorder_ids:
                             for in_picking_backorder_id in self.browse(cr, uid, in_picking_backorder_ids, context=context):
-                                in_move_backorder_ids = stock_move_obj.search(cr, uid, [('picking_id', '=', in_picking_backorder_id.id), ('product_id', '=', in_move.product_id.id), ('move_dest_id', '!=', False)], context=context)
+                                in_move_backorder_ids = stock_move_obj.search(cr, uid, [
+                                    ('picking_id', '=', in_picking_backorder_id.id),
+                                    ('product_id', '=', in_move.product_id.id),
+                                    ('move_dest_id', '!=', False)
+                                ], context=context)
                                 if in_move_backorder_ids:
                                     # We must have only 1 result so take the first, if >1, we have an issue
                                     in_move_backorder = stock_move_obj.browse(cr, uid, in_move_backorder_ids[0], context=context)
-                                    crossdock_location_id = in_move.location_dest_id.warehouse_id.crossdock_location_id.id
-                                    out_move_quantity = in_move_backorder.move_dest_id.product_qty - in_move.product_qty
-                                    data = {
-                                        'product_qty': in_move.product_qty,
-                                        'location_id': crossdock_location_id,
-                                        'move_dest_id': False,
-                                        'state': 'assigned',
-                                    }
-                                    new_move_id = stock_move_obj.copy(cr, uid, in_move_backorder.move_dest_id.id, data, context=context)
-                                    stock_move_obj.write(cr, uid, [in_move_backorder.move_dest_id.id], {'product_qty': out_move_quantity}, context=context)
-                                    stock_move_obj.write(cr, uid, [in_move.id], {'location_dest_id': crossdock_location_id, 'move_dest_id': new_move_id}, context=context)
-                        else:
+                                    # Test in move_dest_id is a picking out not procurement
+                                    if in_move_backorder.move_dest_id.picking_id and in_move_backorder.move_dest_id.picking_id.type == "out":
+                                        ok = False
+                                        crossdock_location_id = in_move.location_dest_id.warehouse_id.crossdock_location_id.id
+                                        out_move_quantity = in_move_backorder.move_dest_id.product_qty - in_move.product_qty
+                                        data = {
+                                            'product_qty': in_move.product_qty,
+                                                'product_uos_qty': stock_move_obj.onchange_quantity(
+                                                    cr, uid, [],
+                                                    in_move.product_id.id,
+                                                    in_move.product_qty,
+                                                    in_move.product_id.uom_id.id,
+                                                    in_move.product_id.uos_id and in_move.product_id.uos_id.id or False
+                                                )['value']['product_uos_qty'],
+                                            'location_id': crossdock_location_id,
+                                            'move_dest_id': False,
+                                            'state': 'assigned',
+                                        }
+                                        new_move_id = stock_move_obj.copy(cr, uid, in_move_backorder.move_dest_id.id, data, context=context)
+                                        stock_move_obj.write(cr, uid, [in_move_backorder.move_dest_id.id], {
+                                            'product_qty': out_move_quantity,
+                                            'product_uos_qty': stock_move_obj.onchange_quantity(
+                                                cr, uid, [],
+                                                in_move_backorder.move_dest_id.product_id.id,
+                                                out_move_quantity,
+                                                in_move_backorder.move_dest_id.product_id.uom_id.id,
+                                                in_move_backorder.move_dest_id.product_id.uos_id and in_move_backorder.move_dest_id.product_id.uos_id.id or False
+                                            )['value']['product_uos_qty'],
+                                        }, context=context)
+                                        stock_move_obj.write(cr, uid, [in_move.id], {'location_dest_id': crossdock_location_id, 'move_dest_id': new_move_id}, context=context)
+                        elif ok:
                             # Search if we have to reserve for this product, ordered by date (default in stock.move object)
-                            out_move_ids = stock_move_obj.search(cr, uid, [('picking_id.type', '=', 'out'), ('picking_id.state', 'in', ('confirmed', 'assigned')), ('state', '=', 'confirmed'), ('product_id', '=', in_move.product_id.id)], context=context)
+                            out_move_ids = stock_move_obj.search(cr, uid, [
+                                ('picking_id.type', '=', 'out'),
+                                ('picking_id.state', 'in', ('confirmed', 'assigned')),
+                                ('state', '=', 'confirmed'),
+                                ('product_id', '=', in_move.product_id.id)
+                            ], context=context)
 
                             # Store the current in_move quantity in a separate variable
                             in_move_quantity = in_move.product_qty
@@ -141,7 +205,7 @@ class stock_picking(osv.osv):
                                     # Retrieve the total reserved quantity
                                     search_domain = [
                                         ('id', '!=', in_move.id),
-                                        ('location_dest_id', 'child_of', in_move.location_dest_id.warehouse_id.lot_stock_id.id),
+                                        ('location_dest_id', 'child_of', [in_move.location_dest_id.warehouse_id.lot_stock_id.id]),
                                         ('move_dest_id', '=', out_move.id),
                                         ('product_id', '=', out_move.product_id.id),
                                         ('state', '=', 'assigned')
@@ -157,9 +221,10 @@ class stock_picking(osv.osv):
                                     # Retrieve the total available quantity
                                     search_domain = [
                                         ('id', '!=', in_move.id),
-                                        ('location_dest_id', 'child_of', in_move.location_dest_id.warehouse_id.lot_stock_id.id),
+                                        ('location_dest_id', 'child_of', [in_move.location_dest_id.warehouse_id.lot_stock_id.id]),
                                         ('move_dest_id', '=', False),
                                         ('product_id', '=', out_move.product_id.id),
+                                        ('picking_id', '!=', False),
                                         ('state', '=', 'assigned')
                                     ]
                                     available_stock_move_ids = stock_move_obj.search(cr, uid, search_domain, context=context)
@@ -170,12 +235,19 @@ class stock_picking(osv.osv):
                                     available_quantity = available_quantity + reserved_quantity
 
                                     # We have receipt enough product, reserve it
-                                    if out_move.product_qty - available_quantity <= in_move_quantity:
-                                        crossdock_quantity = out_move.product_qty - available_quantity
+                                    crossdock_quantity = out_move.product_qty - available_quantity
+                                    if crossdock_quantity > 0.0 and crossdock_quantity <= in_move_quantity:
                                         in_move_quantity = in_move_quantity - crossdock_quantity
                                         crossdock_location_id = self.get_crossdock_location(cr, uid, in_move.id, out_move.id, context=context)
                                         data = {
                                             'product_qty': crossdock_quantity,
+                                            'product_uos_qty': stock_move_obj.onchange_quantity(
+                                                cr, uid, [],
+                                                in_move.product_id.id,
+                                                crossdock_quantity,
+                                                in_move.product_id.uom_id.id,
+                                                in_move.product_id.uos_id and in_move.product_id.uos_id.id or False
+                                            )['value']['product_uos_qty'],
                                             'location_dest_id': crossdock_location_id,
                                             'move_dest_id': out_move.id,
                                             'state': 'assigned',
@@ -184,11 +256,24 @@ class stock_picking(osv.osv):
                                         if in_move_quantity > 0:
                                             # Residual quantity, split the move
                                             new_move_id = stock_move_obj.copy(cr, uid, in_move.id, data, context=context)
-                                            stock_move_obj.write(cr, uid, [in_move.id], {'product_qty': in_move_quantity}, context=context)
+                                            stock_move_obj.write(cr, uid, [in_move.id], {
+                                                'product_qty': in_move_quantity,
+                                                'product_uos_qty': stock_move_obj.onchange_quantity(
+                                                    cr, uid, [],
+                                                    in_move.product_id.id,
+                                                    in_move_quantity,
+                                                    in_move.product_id.uom_id.id,
+                                                    in_move.product_id.uos_id and in_move.product_id.uos_id.id or False
+                                                )['value']['product_uos_qty'],
+                                            }, context=context)
                                         else:
                                             # All the products are reserved, just modify the move
                                             if in_move.move_dest_id:
-                                                stock_move_obj.write(cr, uid, [in_move.move_dest_id.id], {'move_dest_id': out_move.id, 'location_id': crossdock_location_id, 'location_dest_id': crossdock_location_id}, context=context)
+                                                stock_move_obj.write(cr, uid, [in_move.move_dest_id.id], {
+                                                    'move_dest_id': out_move.id,
+                                                    'location_id': crossdock_location_id,
+                                                    'location_dest_id': crossdock_location_id
+                                                }, context=context)
                                                 stock_move_obj.write(cr, uid, [in_move.id], {'location_dest_id': crossdock_location_id}, context=context)
                                             else:
                                                 stock_move_obj.write(cr, uid, [in_move.id], data, context=context)
@@ -196,14 +281,17 @@ class stock_picking(osv.osv):
                                             break
                                     # Check the "force reserve" boolean on the warehouse
                                     elif in_move.location_dest_id.warehouse_id.force_reserve:
-                                        crossdock_location_id = self.get_crossdock_location(cr, uid, in_move.id, out_move.id, context=context)
-                                        stock_move_obj.write(cr, uid, [out_move.id], {'location_id': crossdock_location_id}, context=context)
-                                        if in_move.move_dest_id:
-                                            stock_move_obj.write(cr, uid, [in_move.move_dest_id.id], {'move_dest_id': out_move.id, 'location_id': crossdock_location_id, 'location_dest_id': crossdock_location_id}, context=context)
-                                            stock_move_obj.write(cr, uid, [in_move.id], {'location_dest_id': crossdock_location_id}, context=context)
-                                        else:
-                                            stock_move_obj.write(cr, uid, [in_move.id], {'move_dest_id': out_move.id, 'location_dest_id': crossdock_location_id}, context=context)
-                                        # No more to reserve, we stop searching for this move
+                                        #
+                                        # FIXME : not work correctly so disable it
+                                        #
+                                        #crossdock_location_id = self.get_crossdock_location(cr, uid, in_move.id, out_move.id, context=context)
+                                        #stock_move_obj.write(cr, uid, [out_move.id], {'location_id': crossdock_location_id}, context=context)
+                                        #if in_move.move_dest_id:
+                                        #    stock_move_obj.write(cr, uid, [in_move.move_dest_id.id], {'move_dest_id': out_move.id, 'location_id': crossdock_location_id, 'location_dest_id': crossdock_location_id}, context=context)
+                                        #    stock_move_obj.write(cr, uid, [in_move.id], {'location_dest_id': crossdock_location_id}, context=context)
+                                        #else:
+                                        #    stock_move_obj.write(cr, uid, [in_move.id], {'move_dest_id': out_move.id, 'location_dest_id': crossdock_location_id}, context=context)
+                                        ## No more to reserve, we stop searching for this move
                                         break
                                     # Not enough for the current move and no force reserve, stop here
                                     else:
