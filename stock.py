@@ -310,8 +310,10 @@ class stock_picking(osv.osv):
         canceled_move_ids = stock_move_obj.search(cr, uid, [('picking_id', 'in', ids)], context=context)
 
         # Unreserve linked moves
-        stock_move_ids = stock_move_obj.search(cr, uid, [('move_dest_id', 'in', canceled_move_ids)], context=context)
-        stock_move_obj.write(cr, uid, stock_move_ids, {'move_dest_id': False}, context=context)
+        if canceled_move_ids:
+            stock_move_ids = stock_move_obj.search(cr, uid, [('move_dest_id', 'in', canceled_move_ids)], context=context)
+            if stock_move_ids:
+                stock_move_obj.write(cr, uid, stock_move_ids, {'move_dest_id': False}, context=context)
 
         return super(stock_picking, self).action_cancel(cr, uid, ids, context=context)
 
