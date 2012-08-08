@@ -27,6 +27,7 @@
 from osv import osv
 from osv import fields
 from tools.translate import _
+import netsvc
 
 
 class stock_picking(osv.osv):
@@ -69,6 +70,7 @@ class stock_picking(osv.osv):
 
         if in_ids:
             stock_move_obj = self.pool.get('stock.move')
+            wf_service = netsvc.LocalService("workflow")
 
             # We take all moves, ordered by date (default in stock.move object)
             in_move_ids = stock_move_obj.search(cr, uid, [('picking_id', 'in', in_ids), ('state', 'not in', ('done', 'cancel'))], context=context)
@@ -114,6 +116,8 @@ class stock_picking(osv.osv):
                                         in_move.move_dest_id.product_id.uos_id and in_move.move_dest_id.product_id.uos_id.id or False
                                     )['value']['product_uos_qty'],
                                 }, context=context)
+                                if in_move.move_dest_id.picking_id:
+                                    wf_service.trg_write(uid, 'stock.picking', in_move.move_dest_id.picking_id.id, cr)
                                 stock_move_obj.write(cr, uid, [in_move.id], {'location_dest_id': crossdock_location_id, 'move_dest_id': new_move_id}, context=context)
                             # in_move.product_qty > in_move.move_dest_id.product_qty:
                             else:
@@ -133,6 +137,8 @@ class stock_picking(osv.osv):
                                 }
                                 new_move_id = stock_move_obj.copy(cr, uid, in_move.id, data, context=context)
                                 stock_move_obj.write(cr, uid, [in_move.move_dest_id.id], {'location_id': crossdock_location_id}, context=context)
+                                if in_move.move_dest_id.picking_id:
+                                    wf_service.trg_write(uid, 'stock.picking', in_move.move_dest_id.picking_id.id, cr)
                                 stock_move_obj.write(cr, uid, [in_move.id], {
                                     'product_qty': crossdock_quantity,
                                     'product_uos_qty': stock_move_obj.onchange_quantity(
@@ -187,6 +193,8 @@ class stock_picking(osv.osv):
                                                 in_move_backorder.move_dest_id.product_id.uos_id and in_move_backorder.move_dest_id.product_id.uos_id.id or False
                                             )['value']['product_uos_qty'],
                                         }, context=context)
+                                        if in_move_backorder.move_dest_id.picking_id:
+                                            wf_service.trg_write(uid, 'stock.picking', in_move_backorder.move_dest_id.picking_id.id, cr)
                                         stock_move_obj.write(cr, uid, [in_move.id], {'location_dest_id': crossdock_location_id, 'move_dest_id': new_move_id}, context=context)
                         elif ok:
                             # Search if we have to reserve for this product, ordered by date (default in stock.move object)
